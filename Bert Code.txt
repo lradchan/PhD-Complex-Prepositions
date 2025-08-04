@@ -1,0 +1,140 @@
+Der  Code ist ein Beispiel für die Analyse von Textdaten mit Hilfe von BERT-Embeddings und K-Means-Clustering. Hier ist eine detaillierte Erklärung des Codes in Abschnitten:
+Bibliotheken-Importe
+
+Der Code beginnt mit dem Import von verschiedenen Bibliotheken, die für die Textverarbeitung, maschinelles Lernen und Datenmanipulation verwendet werden.
+
+python
+
+import json
+import scipy
+import torch
+import numpy as np
+import pandas as pd
+from transformers import BertTokenizer, BertModel
+from sklearn.neighbors import NearestNeighbors, KNeighborsClassifier
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score
+from sklearn.metrics.cluster import contingency_matrix 
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_samples, silhouette_score
+import pygsheets
+
+Funktion zur Berechnung von Embeddings
+
+Die Funktion get_embedding berechnet die Embeddings für eine Liste von Texten unter Verwendung eines BERT-Modells.
+
+python
+
+def get_embedding(texts, model, tokenizer, prep, mask=False):
+    embs = []
+    for idx, text in enumerate(texts):
+        marked_text = "[CLS] " + text + " [SEP]"
+        tokenized_text = tokenizer.tokenize(marked_text)
+        indexed_tokens = tokenizer.convert_tokens_to_ids(tokenized_text)[:512]
+        attention_ids = [1] * len(indexed_tokens)
+        segments_ids = [0] * len(indexed_tokens)
+        tokens_tensor = torch.tensor([indexed_tokens])
+        segments_tensors = torch.tensor([segments_ids])
+        attention_tensors = torch.tensor([attention_ids])
+        with torch.no_grad():
+            outputs = model(input_ids=tokens_tensor, attention_mask=attention_tensors, return_dict=True, output_hidden_states=True)
+            hidden_states = outputs.last_hidden_state      
+            if prep in tokenized_text:
+                token_idx = tokenized_text.index(prep)
+                sum_vec = hidden_states[0][token_idx]
+                embs.append(sum_vec.numpy().tolist())
+            else:
+                print(prep, 'not found in', marked_text, text)
+                embs.append(float("nan"))
+                continue
+    return embs
+
+Initialisierung und Vorverarbeitung
+
+Hier wird der Tokenizer und das Modell geladen. Der Code überprüft auch, ob das zu analysierende Wort korrekt tokenisiert wurde.
+
+python
+
+PREPOSITION = 'в силу' 
+ENCODER = 'DeepPavlov/rubert-base-cased'
+PREPOSITION_CONTENT = PREPOSITION.split()[1]
+tokenizer = BertTokenizer.from_pretrained(ENCODER)
+encoder = BertModel.from_pretrained(ENCODER, output_hidden_states=True)
+assert len(tokenizer(PREPOSITION_CONTENT).input_ids) == 3
+
+Laden der Daten aus Google Sheets
+
+Die Daten werden aus einem Google Sheet geladen, und einige Vorverarbeitungsschritte werden durchgeführt.
+
+python
+
+c = pygsheets.authorize(service_file='client_secret.json')
+sh = c.open('your_google_sheet_name')  # Hier muss der Name des Google Sheets eingefügt werden
+wk = sh.worksheet_by_title(PREPOSITION)
+df = wk.get_as_df()
+
+df['text'] = df['text'].astype(str).str.lower()
+df['year'] = df['year'].astype('int32')
+df['embs'] = get_embedding(df["text"], encoder, tokenizer, PREPOSITION_CONTENT, False)
+df.dropna(subset=['year', 'text', 'embs'], inplace=True)
+df.to_pickle("./pkl/"+PREPOSITION+".pkl")
+
+Clustering und Silhouette-Analyse
+
+Der Code führt K-Means-Clustering durch und berechnet die Silhouette-Werte für verschiedene Clusterzahlen, um die Clusterqualität zu bewerten.
+
+python
+
+stats = {}
+for prep in [PREPOSITION]:
+    stats[prep] = {}
+    print("prep", prep)
+    try:
+        df = pd.read_pickle("pkl/"+prep+".pkl")
+        print(df.shape)
+    except:
+        continue
+    new_df = pd.DataFrame()
+    for year in [(1800,1850), (1850, 1900), (1900, 1950), (1950, 2000)]:
+        print("period", year)
+        kmeans = {}
+        silhouette_list = []
+        small_df = df[df['year'].between(year[0], year[1])]
+        print("Shape of the defined period:", small_df.shape)
+        X = small_df['embs'].tolist()
+        for n_clusters in range(2, 7):
+            try:
+                clusterer = KMeans(n_clusters=n_clusters, random_state=10).fit(X)
+            except:
+                continue  
+            cluster_labels = clusterer.predict(X)
+            kmeans[n_clusters] = clusterer
+            silhouette = silhouette_score(X, cluster_labels)
+            silhouette_list.append((n_clusters, silhouette))
+        silhouette_list_sorted = sorted(silhouette_list, key=lambda x: x[1], reverse=True)
+        stats[prep][year] = silhouette_list_sorted
+        small_df.assign(cluster=lambda x: kmeans[silhouette_list_sorted[0][0]].predict(x.embs.tolist())[0])
+        new_df = pd.concat([new_df, small_df], ignore_index=True)
+stats
+
+Ergebnis speichern und zurück in Google Sheets laden
+
+Die Ergebnisse werden in ein DataFrame geschrieben und zurück in das Google Sheet geladen.
+
+python
+
+new_df.sort_values(by=['year'], inplace=True)
+new_df.drop('embs', axis='columns', inplace=True)
+wks = sh.worksheet_by_title("="+PREPOSITION)
+wks.set_dataframe(new_df,(1,1), fit=True)
+
+Zusammenfassung
+
+Der Code führt die folgenden Schritte aus:
+
+    Laden und Vorverarbeiten von Textdaten.
+    Berechnen von Text-Embeddings mit einem BERT-Modell.
+    Clustering der Embeddings über verschiedene Zeiträume mit K-Means.
+    Evaluierung der Clusterqualität mittels Silhouette-Werten.
+    Speichern und Aktualisieren der Ergebnisse in Google Sheets.
