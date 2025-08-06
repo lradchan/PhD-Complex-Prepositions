@@ -5,5 +5,5 @@ This repository accompanies the PhD thesis *"From Emergence to Establishment of 
 
 ## Contents
 - `data/`: preprocessed corpora
-- `scripts/`: BERT clustering and visualization
+- `scripts/`: BERT clustering 
 - `results/`: semantic maps and frequency curves
